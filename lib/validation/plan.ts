@@ -7,7 +7,7 @@ import { z } from 'zod';
 // model response before staging. Keep it flat and stable (CLAUDE.md
 // "Structured output requirements").
 
-const isoDate = z
+export const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD date');
 

@@ -35,18 +35,37 @@ Supabase (Postgres + Auth, RLS on every user-owned table)
 | `lib/db/middleware.ts` + `middleware.ts` | Session refresh and route protection |
 | `lib/auth/actions.ts` | Sign in / sign up / sign out server actions |
 | `lib/validation/plan.ts` | Zod schemas for Claude planning output (also generates the tool JSON schema) |
-| `lib/validation/goal.ts` | Zod schema for goal form input |
-| `lib/domain/plan-rules.ts` | Business-rule validation on top of schema validation |
-| `lib/domain/goal-actions.ts` | Goal CRUD server actions |
+| `lib/validation/goal-draft.ts` | Zod schemas for Claude's goal-intake output (draft or clarification) |
+| `lib/validation/goal.ts` | Zod schema for the manual goal-fields fallback form |
+| `lib/domain/plan-rules.ts` | Business-rule validation on top of schema validation (plans) |
+| `lib/domain/goal-draft-rules.ts` | Business-rule validation on top of schema validation (goal drafts) |
+| `lib/domain/goal-intake-actions.ts` | Goal-intake conversation: request/approve/reject a Claude-drafted goal |
+| `lib/domain/goal-actions.ts` | Goal CRUD server actions (manual create/update/delete, status changes) |
 | `lib/domain/plan-actions.ts` | Plan generation, staging, approval, rejection |
 | `lib/ai/claude.ts` | Claude API call, forced tool use, failure classification |
-| `lib/ai/prompts.ts` | Planning system prompt |
+| `lib/ai/prompts.ts` | System prompts per Claude workflow mode (goal intake, planning) |
 | `types/domain.ts` | Shared domain types mirroring the database enums |
+
+## Goal intake workflow (implemented)
+
+Claude is the front door of the app, not the `goals` table. `/goals/new`
+leads with `GoalIntakePanel`: the user describes the goal in freeform text,
+Claude runs in "Goal clarification" mode (`generateGoalDraft`) and either
+asks questions or returns a structured draft. The draft is staged on a
+`goal_conversations` row with `goal_id = null` (conversations can exist
+before any goal does) and shown in `GoalDraftPreview` for review/edits.
+Only on approval does `approveGoalDraft` insert the `goals` row and back-fill
+`goal_conversations.goal_id`. A collapsed "Skip Claude — enter goal fields
+manually" fallback (the original `GoalForm`) still exists for direct CRUD,
+but it is not the primary path.
 
 ## Plan persistence workflow (implemented)
 
-1. User creates a goal (`goals` row, status `draft`).
-2. User submits a planning prompt from the goal detail page.
+1. User creates a goal through the Claude goal-intake flow above (`goals`
+   row, status `draft`), or manually via the fallback form.
+2. User submits a planning prompt from the goal detail page, where the
+   Claude planning conversation is the first thing shown — manual goal-field
+   edits are a secondary, collapsed section below it.
 3. `requestPlan` records a `goal_conversations` row (`pending`) — every AI
    interaction is auditable, including failures.
 4. `generatePlan` calls Claude with `tool_choice` forcing a single
@@ -100,3 +119,7 @@ Goal status follows: `draft → planning → awaiting_approval → active`, with
   (`conversation_type = 'replan'`, `task_source = 'ai_replan'`).
 - Milestone/task status updates from the UI are minimal; execution views
   arrive in Phase 2.
+- The goal-intake conversation has no multi-turn memory: answering a
+  clarification question starts a new `goal_conversations` row rather than
+  continuing the same thread. Same limitation as the milestone/task planning
+  conversation. A richer threaded conversation view is a Phase 2/3 concern.
