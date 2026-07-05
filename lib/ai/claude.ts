@@ -1,24 +1,17 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
-import { PLANNING_SYSTEM_PROMPT } from '@/lib/ai/prompts';
+import { GOAL_INTAKE_SYSTEM_PROMPT, PLANNING_SYSTEM_PROMPT } from '@/lib/ai/prompts';
 import { planningResponseSchema, type PlanningResponse } from '@/lib/validation/plan';
+import { goalIntakeResponseSchema, type GoalIntakeResponse } from '@/lib/validation/goal-draft';
 import type { Goal } from '@/types/domain';
 
-// Server-side Claude integration for structured plan generation.
-// The model is forced to answer through a single tool call whose input
-// schema is derived from the same Zod schema used for validation, so the
-// raw response and the validated payload can never drift apart.
+// Server-side Claude integration for structured outputs. Every workflow mode
+// (goal intake, planning, ...) forces a single tool call whose input_schema
+// is derived from the same Zod schema used for validation, so the raw
+// response and the validated payload can never drift apart.
 
 const DEFAULT_MODEL = process.env.CLAUDE_MODEL ?? 'claude-sonnet-5';
 const MAX_TOKENS = 8192;
-
-// Wrapping in an object keeps the top-level JSON schema type "object",
-// which the tool input_schema requires (the union itself is an anyOf).
-const toolInputSchema = z.object({ response: planningResponseSchema });
-
-export type PlanningResult =
-  | { ok: true; response: PlanningResponse; raw: string }
-  | { ok: false; failure: PlanningFailure; raw: string | null };
 
 export interface PlanningFailure {
   // Distinguishes AI failures from ordinary validation errors for logging.
@@ -26,10 +19,19 @@ export interface PlanningFailure {
   message: string;
 }
 
-export async function generatePlan(
-  goal: Pick<Goal, 'title' | 'description' | 'success_definition' | 'category' | 'priority' | 'start_date' | 'target_date' | 'estimated_effort_hours'>,
-  userPrompt: string
-): Promise<PlanningResult> {
+export type ClaudeToolResult<T> =
+  | { ok: true; response: T; raw: string }
+  | { ok: false; failure: PlanningFailure; raw: string | null };
+
+async function callClaudeTool<T>(opts: {
+  system: string;
+  toolName: string;
+  toolDescription: string;
+  // Wrapping in an object keeps the top-level JSON schema type "object",
+  // which the tool input_schema requires (the union itself is an anyOf).
+  responseSchema: z.ZodType<T>;
+  userMessage: string;
+}): Promise<ClaudeToolResult<T>> {
   if (!process.env.ANTHROPIC_API_KEY) {
     return {
       ok: false,
@@ -42,43 +44,23 @@ export async function generatePlan(
   }
 
   const client = new Anthropic();
-
-  const goalContext = [
-    `Goal title: ${goal.title}`,
-    goal.description && `Description: ${goal.description}`,
-    goal.success_definition && `Success definition: ${goal.success_definition}`,
-    goal.category && `Category: ${goal.category}`,
-    `Priority: ${goal.priority}`,
-    goal.start_date && `Start date: ${goal.start_date}`,
-    goal.target_date && `Target date: ${goal.target_date}`,
-    goal.estimated_effort_hours != null &&
-      `Estimated effort: ${goal.estimated_effort_hours} hours`,
-    `Today's date: ${new Date().toISOString().slice(0, 10)}`,
-  ]
-    .filter(Boolean)
-    .join('\n');
+  const toolInputSchema = z.object({ response: opts.responseSchema });
 
   let message: Anthropic.Message;
   try {
     message = await client.messages.create({
       model: DEFAULT_MODEL,
       max_tokens: MAX_TOKENS,
-      system: PLANNING_SYSTEM_PROMPT,
+      system: opts.system,
       tools: [
         {
-          name: 'submit_planning_response',
-          description:
-            'Submit the structured planning response: either a full plan or clarification questions.',
+          name: opts.toolName,
+          description: opts.toolDescription,
           input_schema: z.toJSONSchema(toolInputSchema) as Anthropic.Tool['input_schema'],
         },
       ],
-      tool_choice: { type: 'tool', name: 'submit_planning_response' },
-      messages: [
-        {
-          role: 'user',
-          content: `${goalContext}\n\nUser request:\n${userPrompt}`,
-        },
-      ],
+      tool_choice: { type: 'tool', name: opts.toolName },
+      messages: [{ role: 'user', content: opts.userMessage }],
     });
   } catch (err) {
     return {
@@ -97,7 +79,7 @@ export async function generatePlan(
     return {
       ok: false,
       raw,
-      failure: { kind: 'refusal', message: 'Claude declined to generate a plan for this request.' },
+      failure: { kind: 'refusal', message: 'Claude declined to respond to this request.' },
     };
   }
 
@@ -105,7 +87,7 @@ export async function generatePlan(
     return {
       ok: false,
       raw,
-      failure: { kind: 'truncated', message: 'Claude response was cut off before completing the plan.' },
+      failure: { kind: 'truncated', message: 'Claude response was cut off before completing.' },
     };
   }
 
@@ -136,4 +118,51 @@ export async function generatePlan(
   }
 
   return { ok: true, response: parsed.data.response, raw };
+}
+
+// Goal intake ("Goal clarification" mode): turns a freeform goal description
+// into structured goal fields, or asks clarifying questions first. This is
+// the front door of the app — nothing is written to `goals` until the user
+// approves the staged draft.
+export async function generateGoalDraft(
+  userPrompt: string
+): Promise<ClaudeToolResult<GoalIntakeResponse>> {
+  return callClaudeTool({
+    system: GOAL_INTAKE_SYSTEM_PROMPT,
+    toolName: 'submit_goal_intake',
+    toolDescription:
+      'Submit the structured goal-intake response: either a goal draft or clarification questions.',
+    responseSchema: goalIntakeResponseSchema,
+    userMessage: `Today's date: ${new Date().toISOString().slice(0, 10)}\n\nUser request:\n${userPrompt}`,
+  });
+}
+
+// Milestone/task planning for an existing goal.
+export async function generatePlan(
+  goal: Pick<Goal, 'title' | 'description' | 'success_definition' | 'category' | 'priority' | 'start_date' | 'target_date' | 'estimated_effort_hours'>,
+  userPrompt: string
+): Promise<ClaudeToolResult<PlanningResponse>> {
+  const goalContext = [
+    `Goal title: ${goal.title}`,
+    goal.description && `Description: ${goal.description}`,
+    goal.success_definition && `Success definition: ${goal.success_definition}`,
+    goal.category && `Category: ${goal.category}`,
+    `Priority: ${goal.priority}`,
+    goal.start_date && `Start date: ${goal.start_date}`,
+    goal.target_date && `Target date: ${goal.target_date}`,
+    goal.estimated_effort_hours != null &&
+      `Estimated effort: ${goal.estimated_effort_hours} hours`,
+    `Today's date: ${new Date().toISOString().slice(0, 10)}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return callClaudeTool({
+    system: PLANNING_SYSTEM_PROMPT,
+    toolName: 'submit_planning_response',
+    toolDescription:
+      'Submit the structured planning response: either a full plan or clarification questions.',
+    responseSchema: planningResponseSchema,
+    userMessage: `${goalContext}\n\nUser request:\n${userPrompt}`,
+  });
 }

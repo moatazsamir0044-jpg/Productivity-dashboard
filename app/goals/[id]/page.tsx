@@ -4,6 +4,7 @@ import { AppShell } from '@/components/ui/app-shell';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { PlanPanel } from '@/components/planning/plan-panel';
 import { PlanPreview } from '@/components/planning/plan-preview';
+import { ConversationHistory } from '@/components/planning/conversation-history';
 import { GoalEditForm } from '@/components/goals/goal-edit-form';
 import { planSchema } from '@/lib/validation/plan';
 import type { Goal, GoalConversation, Milestone, Risk, Task } from '@/types/domain';
@@ -29,7 +30,7 @@ export default async function GoalDetailPage({
   }
   const goal = goalData as Goal;
 
-  const [milestonesRes, tasksRes, risksRes, stagedRes, failedRes] =
+  const [milestonesRes, tasksRes, risksRes, stagedRes, failedRes, historyRes] =
     await Promise.all([
       supabase
         .from('milestones')
@@ -60,6 +61,12 @@ export default async function GoalDetailPage({
         .eq('status', 'failed')
         .order('created_at', { ascending: false })
         .limit(1),
+      supabase
+        .from('goal_conversations')
+        .select('*')
+        .eq('goal_id', goal.id)
+        .order('created_at', { ascending: false })
+        .limit(20),
     ]);
 
   const milestones = (milestonesRes.data ?? []) as Milestone[];
@@ -67,6 +74,7 @@ export default async function GoalDetailPage({
   const risks = (risksRes.data ?? []) as Risk[];
   const staged = (stagedRes.data?.[0] ?? null) as GoalConversation | null;
   const lastFailed = (failedRes.data?.[0] ?? null) as GoalConversation | null;
+  const conversationHistory = (historyRes.data ?? []) as GoalConversation[];
 
   // Parse the staged plan defensively; a stale or corrupted staging row must
   // not break the page.
@@ -113,8 +121,6 @@ export default async function GoalDetailPage({
       )}
 
       <div className="space-y-6">
-        <GoalEditForm goal={goal} />
-
         {lastFailed && !staged && (
           <div className="rounded border border-red-800 bg-red-950 p-4 text-sm text-red-300">
             <p className="font-medium">Last planning attempt failed</p>
@@ -140,6 +146,10 @@ export default async function GoalDetailPage({
             A staged plan exists but its payload is invalid. Regenerate the plan.
           </div>
         )}
+
+        <ConversationHistory conversations={conversationHistory} />
+
+        <GoalEditForm goal={goal} />
 
         {hasPlan && (
           <section>

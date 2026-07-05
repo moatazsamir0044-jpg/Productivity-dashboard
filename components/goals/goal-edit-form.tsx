@@ -30,8 +30,8 @@ export function GoalEditForm({ goal }: { goal: Goal }) {
 
   return (
     <details className="rounded border border-neutral-800">
-      <summary className="cursor-pointer px-4 py-3 text-sm text-neutral-300 hover:bg-neutral-900">
-        Edit goal
+      <summary className="cursor-pointer px-4 py-3 text-sm text-neutral-400 hover:bg-neutral-900">
+        Edit goal fields manually
       </summary>
       <div className="border-t border-neutral-800 p-4">
         <form action={formAction} className="max-w-xl space-y-4">
