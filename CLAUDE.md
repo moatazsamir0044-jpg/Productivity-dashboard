@@ -553,17 +553,20 @@ The UI must never fail silently for AI workflows. The user should always underst
 
 ## Commands
 
-Update these commands once the repository is scaffolded. Until then, use them as placeholders only if they match the actual setup.
-
 ```
-npm install
-npm run dev
-npm run lint
-npm run build
-npm run test
+npm install        # install dependencies
+npm run dev        # start the dev server (http://localhost:3000)
+npm run lint       # ESLint
+npm run test       # Vitest (validation + business-rule tests in tests/)
+npm run build      # production build; includes lint + TypeScript checks
 ```
 
-After scaffolding, ensure this section contains the exact commands Claude should use for development, linting, testing, Supabase operations, and build verification.
+Build verification is `npm run test && npm run build`.
+
+Supabase operations: schema changes are SQL files in `supabase/migrations/`
+(timestamped filenames, applied in order). Apply them with the Supabase MCP
+`apply_migration` tool, `supabase db push`, or the SQL editor. Environment
+configuration lives in `.env.local` (see `.env.example`).
 
 ## Delivery Phases
 
