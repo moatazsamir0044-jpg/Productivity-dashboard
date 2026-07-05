@@ -1,0 +1,9 @@
+# Vercel upload list. Unlike .gitignore, this intentionally does NOT exclude
+# .env.local: this project is deployed from a Claude Code session where the
+# runtime configuration lives in that file, and it must reach the Vercel
+# build. It still never enters git history.
+.git
+node_modules
+.next
+tests
+docs
