@@ -93,6 +93,16 @@ pending ──► staged ──► approved   （user approved; production recor
 Goal status follows: `draft → planning → awaiting_approval → active`, with
 `paused / completed / archived` as manual transitions.
 
+## Deployment & configuration
+
+Environment variables, database migration steps, Supabase Auth settings
+(Site URL / redirect URLs / email confirmation), Vercel setup, and a
+troubleshooting table live in [`deployment.md`](./deployment.md). Note the
+auth redirect behavior: confirmation links and post-login redirects are
+built from Supabase's **Site URL**, which must point at the app's real
+origin — the default `http://localhost:3000` breaks confirmation on any
+deployed instance.
+
 ## Deliberate Phase 1 limits
 
 - No task board, check-ins, reviews, or notifications UI yet (Phase 2).
