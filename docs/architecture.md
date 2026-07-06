@@ -112,13 +112,38 @@ pending ──► staged ──► approved   （user approved; production recor
 Goal status follows: `draft → planning → awaiting_approval → active`, with
 `paused / completed / archived` as manual transitions.
 
+## Execution tracking (implemented — first Phase 2 slice)
+
+The operating loop after a plan is approved:
+
+1. Tasks get assigned to days of the week via `tasks.scheduled_for`
+   (the "No day / Mon–Sun" select on any task row). Direct user edits like
+   this persist immediately — no staging, per the approval rules.
+2. The Today dashboard (`app/dashboard`) is day-driven: "Today's plan"
+   (scheduled or due today, done items stay visible), "Slipped" (scheduled
+   or due before today and still open), a Mon–Sun week board, and
+   "Not scheduled yet" as the backlog to pull from when planning a week.
+3. Task status changes (checkbox or status select in
+   `components/tasks/task-row.tsx`) call `lib/domain/task-actions.ts`, which
+   rolls progress up: task → milestone `percent_complete`/`status` → goal
+   `percent_complete`. The pure rollup rules live in
+   `lib/domain/progress.ts` (tested in `tests/progress.test.ts`); cancelled
+   tasks never count, and a manually set `blocked` milestone status is
+   preserved until the milestone actually completes.
+4. Check-ins (`lib/domain/check-in-actions.ts`, composer on the goal page)
+   log progress notes, blockers, and next steps against a goal or a specific
+   task — the raw material for daily/weekly reviews.
+
+Known limit: tasks are one-shot. A recurring weekly routine (e.g. the same
+four workouts every week) is modelled as this week's scheduled tasks; a
+recurrence/replan mechanism is future work.
+
 ## Deliberate Phase 1 limits
 
-- No task board, check-ins, reviews, or notifications UI yet (Phase 2).
+- No kanban board, timeline view, reviews, or notifications UI yet
+  (remaining Phase 2 scope).
 - No replanning engine yet (Phase 3); the schema already supports it
   (`conversation_type = 'replan'`, `task_source = 'ai_replan'`).
-- Milestone/task status updates from the UI are minimal; execution views
-  arrive in Phase 2.
 - The goal-intake conversation has no multi-turn memory: answering a
   clarification question starts a new `goal_conversations` row rather than
   continuing the same thread. Same limitation as the milestone/task planning

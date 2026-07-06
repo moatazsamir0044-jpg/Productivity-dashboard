@@ -6,8 +6,18 @@ import { PlanPanel } from '@/components/planning/plan-panel';
 import { PlanPreview } from '@/components/planning/plan-preview';
 import { ConversationHistory } from '@/components/planning/conversation-history';
 import { GoalEditForm } from '@/components/goals/goal-edit-form';
+import { CheckInComposer } from '@/components/goals/check-in-composer';
+import { TaskRow } from '@/components/tasks/task-row';
 import { planSchema } from '@/lib/validation/plan';
-import type { Goal, GoalConversation, Milestone, Risk, Task } from '@/types/domain';
+import { todayISO, weekDaysISO } from '@/lib/utils/dates';
+import type {
+  CheckIn,
+  Goal,
+  GoalConversation,
+  Milestone,
+  Risk,
+  Task,
+} from '@/types/domain';
 
 export default async function GoalDetailPage({
   params,
@@ -30,8 +40,15 @@ export default async function GoalDetailPage({
   }
   const goal = goalData as Goal;
 
-  const [milestonesRes, tasksRes, risksRes, stagedRes, failedRes, historyRes] =
-    await Promise.all([
+  const [
+    milestonesRes,
+    tasksRes,
+    risksRes,
+    stagedRes,
+    failedRes,
+    historyRes,
+    checkInsRes,
+  ] = await Promise.all([
       supabase
         .from('milestones')
         .select('*')
@@ -67,6 +84,12 @@ export default async function GoalDetailPage({
         .eq('goal_id', goal.id)
         .order('created_at', { ascending: false })
         .limit(20),
+      supabase
+        .from('check_ins')
+        .select('*')
+        .eq('goal_id', goal.id)
+        .order('created_at', { ascending: false })
+        .limit(10),
     ]);
 
   const milestones = (milestonesRes.data ?? []) as Milestone[];
@@ -75,6 +98,13 @@ export default async function GoalDetailPage({
   const staged = (stagedRes.data?.[0] ?? null) as GoalConversation | null;
   const lastFailed = (failedRes.data?.[0] ?? null) as GoalConversation | null;
   const conversationHistory = (historyRes.data ?? []) as GoalConversation[];
+  const checkIns = (checkInsRes.data ?? []) as CheckIn[];
+
+  const today = todayISO();
+  const weekDays = weekDaysISO(today);
+  const openTasks = tasks.filter(
+    (t) => t.status !== 'done' && t.status !== 'cancelled'
+  );
 
   // Parse the staged plan defensively; a stale or corrupted staging row must
   // not break the page.
@@ -147,10 +177,6 @@ export default async function GoalDetailPage({
           </div>
         )}
 
-        <ConversationHistory conversations={conversationHistory} />
-
-        <GoalEditForm goal={goal} />
-
         {hasPlan && (
           <section>
             <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-neutral-400">
@@ -167,6 +193,9 @@ export default async function GoalDetailPage({
                       {milestone.sequence_no}. {milestone.title}
                     </h3>
                     <div className="flex items-center gap-3">
+                      <span className="text-xs text-neutral-500">
+                        {Math.round(milestone.percent_complete)}%
+                      </span>
                       {milestone.target_date && (
                         <span className="text-xs text-neutral-500">
                           Target {milestone.target_date}
@@ -180,28 +209,53 @@ export default async function GoalDetailPage({
                       Done when: {milestone.success_criteria}
                     </p>
                   )}
-                  <ul className="space-y-1">
+                  <ul className="space-y-2">
                     {(tasksByMilestone.get(milestone.id) ?? []).map((task) => (
-                      <li
+                      <TaskRow
                         key={task.id}
-                        className="flex items-center justify-between rounded bg-neutral-900 px-3 py-2"
-                      >
-                        <div>
-                          <p className="text-sm text-neutral-200">{task.title}</p>
-                          <p className="text-xs text-neutral-500">
-                            {task.priority} priority
-                            {task.due_date && ` · due ${task.due_date}`}
-                            {task.estimated_minutes != null &&
-                              ` · ~${task.estimated_minutes} min`}
-                          </p>
-                        </div>
-                        <StatusBadge status={task.status} />
-                      </li>
+                        task={task}
+                        weekDays={weekDays}
+                        today={today}
+                      />
                     ))}
                   </ul>
                 </li>
               ))}
             </ol>
+          </section>
+        )}
+
+        {hasPlan && (
+          <section>
+            <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-neutral-400">
+              Check-ins
+            </h2>
+            <div className="space-y-3">
+              <CheckInComposer goalId={goal.id} tasks={openTasks} />
+              {checkIns.length > 0 && (
+                <ul className="space-y-1">
+                  {checkIns.map((checkIn) => (
+                    <li
+                      key={checkIn.id}
+                      className="rounded bg-neutral-900 px-3 py-2 text-sm"
+                    >
+                      <p className="text-neutral-200">
+                        {checkIn.blocker_flag && (
+                          <span className="mr-2 rounded bg-red-950 px-1.5 py-0.5 text-xs font-medium text-red-300">
+                            blocker
+                          </span>
+                        )}
+                        {checkIn.note}
+                      </p>
+                      <p className="mt-0.5 text-xs text-neutral-500">
+                        {new Date(checkIn.created_at).toISOString().slice(0, 10)}
+                        {checkIn.next_step && ` · next: ${checkIn.next_step}`}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </section>
         )}
 
@@ -227,6 +281,10 @@ export default async function GoalDetailPage({
             </ul>
           </section>
         )}
+
+        <ConversationHistory conversations={conversationHistory} />
+
+        <GoalEditForm goal={goal} />
       </div>
     </AppShell>
   );

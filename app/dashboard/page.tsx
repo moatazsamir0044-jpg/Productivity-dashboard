@@ -2,7 +2,17 @@ import Link from 'next/link';
 import { createClient } from '@/lib/db/server';
 import { AppShell } from '@/components/ui/app-shell';
 import { StatusBadge } from '@/components/ui/status-badge';
+import { TaskRow } from '@/components/tasks/task-row';
+import { WeekBoard } from '@/components/tasks/week-board';
+import { todayISO, weekDaysISO } from '@/lib/utils/dates';
 import type { Goal, Task } from '@/types/domain';
+
+// The Today screen is the top of the execution loop: plans are approved on
+// the goal page, tasks get scheduled onto days, and this screen answers
+// "what do I do today?" — today's scheduled/due tasks first, then anything
+// that slipped, then the shape of the week.
+
+type TaskWithGoal = Task & { goals: { title: string } | null };
 
 export default async function DashboardPage() {
   const supabase = createClient();
@@ -10,40 +20,79 @@ export default async function DashboardPage() {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
+  const weekDays = weekDaysISO(today);
+  const weekStart = weekDays[0];
+  const weekEnd = weekDays[6];
 
   // Single round of parallel queries to keep the Today screen fast.
-  const [goalsRes, dueTodayRes, overdueRes] = await Promise.all([
-    supabase
-      .from('goals')
-      .select('*')
-      .in('status', ['active', 'awaiting_approval', 'planning', 'draft'])
-      .order('updated_at', { ascending: false })
-      .limit(10),
-    supabase
-      .from('tasks')
-      .select('*')
-      .eq('due_date', today)
-      .not('status', 'in', '("done","cancelled")')
-      .order('priority', { ascending: false })
-      .limit(20),
-    supabase
-      .from('tasks')
-      .select('*')
-      .lt('due_date', today)
-      .not('status', 'in', '("done","cancelled")')
-      .order('due_date', { ascending: true })
-      .limit(20),
-  ]);
+  const [todayRes, slippedRes, weekRes, unscheduledRes, goalsRes] =
+    await Promise.all([
+      // Today's plan: scheduled for today or hard-due today. Done tasks stay
+      // visible so the day shows progress, not an emptying list.
+      supabase
+        .from('tasks')
+        .select('*, goals(title)')
+        .or(`scheduled_for.eq.${today},due_date.eq.${today}`)
+        .neq('status', 'cancelled')
+        .order('status', { ascending: true })
+        .limit(30),
+      // Slipped: scheduled or due before today and still not done.
+      supabase
+        .from('tasks')
+        .select('*, goals(title)')
+        .or(`scheduled_for.lt.${today},due_date.lt.${today}`)
+        .not('status', 'in', '("done","cancelled")')
+        .order('due_date', { ascending: true, nullsFirst: false })
+        .limit(20),
+      supabase
+        .from('tasks')
+        .select('*')
+        .gte('scheduled_for', weekStart)
+        .lte('scheduled_for', weekEnd)
+        .neq('status', 'cancelled')
+        .limit(100),
+      // Backlog to pull from when planning the week: open tasks with no day.
+      supabase
+        .from('tasks')
+        .select('*, goals(title)')
+        .is('scheduled_for', null)
+        .in('status', ['backlog', 'todo', 'in_progress', 'waiting'])
+        .order('priority', { ascending: false })
+        .limit(10),
+      supabase
+        .from('goals')
+        .select('*')
+        .in('status', ['active', 'awaiting_approval', 'planning', 'draft'])
+        .order('updated_at', { ascending: false })
+        .limit(10),
+    ]);
 
+  const todaysTasks = (todayRes.data ?? []) as TaskWithGoal[];
+  // A task can be both due today and scheduled earlier; keep it in Today only.
+  const todayIds = new Set(todaysTasks.map((t) => t.id));
+  const slipped = ((slippedRes.data ?? []) as TaskWithGoal[]).filter(
+    (t) => !todayIds.has(t.id)
+  );
+  const weekTasks = (weekRes.data ?? []) as Task[];
+  const unscheduled = ((unscheduledRes.data ?? []) as TaskWithGoal[]).filter(
+    (t) => !todayIds.has(t.id)
+  );
   const goals = (goalsRes.data ?? []) as Goal[];
-  const dueToday = (dueTodayRes.data ?? []) as Task[];
-  const overdue = (overdueRes.data ?? []) as Task[];
+
+  const doneToday = todaysTasks.filter((t) => t.status === 'done').length;
 
   return (
     <AppShell email={user?.email}>
       <div className="mb-8 flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-white">Today</h1>
+        <div>
+          <h1 className="text-xl font-semibold text-white">Today</h1>
+          {todaysTasks.length > 0 && (
+            <p className="text-xs text-neutral-500">
+              {doneToday} of {todaysTasks.length} done
+            </p>
+          )}
+        </div>
         <Link
           href="/goals/new"
           className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
@@ -52,25 +101,84 @@ export default async function DashboardPage() {
         </Link>
       </div>
 
-      {overdue.length > 0 && (
+      <section className="mb-8">
+        <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-neutral-400">
+          Today&apos;s plan ({todaysTasks.length})
+        </h2>
+        {todaysTasks.length === 0 ? (
+          <p className="text-sm text-neutral-500">
+            Nothing scheduled for today. Pick tasks below and assign them a day.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {todaysTasks.map((task) => (
+              <TaskRow
+                key={task.id}
+                task={task}
+                weekDays={weekDays}
+                today={today}
+                goalTitle={task.goals?.title}
+                showGoalLink
+              />
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {slipped.length > 0 && (
         <section className="mb-8">
           <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-red-400">
-            Overdue ({overdue.length})
+            Slipped ({slipped.length})
           </h2>
-          <TaskList tasks={overdue} highlightOverdue />
+          <p className="mb-3 text-xs text-neutral-500">
+            Scheduled or due before today and still open. Finish them or move
+            them to a new day.
+          </p>
+          <ul className="space-y-2">
+            {slipped.map((task) => (
+              <TaskRow
+                key={task.id}
+                task={task}
+                weekDays={weekDays}
+                today={today}
+                goalTitle={task.goals?.title}
+                showGoalLink
+              />
+            ))}
+          </ul>
         </section>
       )}
 
       <section className="mb-8">
         <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-neutral-400">
-          Due today ({dueToday.length})
+          This week
         </h2>
-        {dueToday.length === 0 ? (
-          <p className="text-sm text-neutral-500">Nothing due today.</p>
-        ) : (
-          <TaskList tasks={dueToday} />
-        )}
+        <WeekBoard weekDays={weekDays} tasks={weekTasks} today={today} />
       </section>
+
+      {unscheduled.length > 0 && (
+        <section className="mb-8">
+          <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-neutral-400">
+            Not scheduled yet ({unscheduled.length})
+          </h2>
+          <p className="mb-3 text-xs text-neutral-500">
+            Open tasks without a day. Assign each one to a day of this week to
+            build your plan.
+          </p>
+          <ul className="space-y-2">
+            {unscheduled.map((task) => (
+              <TaskRow
+                key={task.id}
+                task={task}
+                weekDays={weekDays}
+                today={today}
+                goalTitle={task.goals?.title}
+                showGoalLink
+              />
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section>
         <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-neutral-400">
@@ -94,11 +202,10 @@ export default async function DashboardPage() {
                 >
                   <div>
                     <p className="text-sm font-medium text-white">{goal.title}</p>
-                    {goal.target_date && (
-                      <p className="text-xs text-neutral-500">
-                        Target: {goal.target_date}
-                      </p>
-                    )}
+                    <p className="text-xs text-neutral-500">
+                      {Math.round(goal.percent_complete)}% complete
+                      {goal.target_date && ` · target ${goal.target_date}`}
+                    </p>
                   </div>
                   <StatusBadge status={goal.status} />
                 </Link>
@@ -108,38 +215,5 @@ export default async function DashboardPage() {
         )}
       </section>
     </AppShell>
-  );
-}
-
-function TaskList({
-  tasks,
-  highlightOverdue = false,
-}: {
-  tasks: Task[];
-  highlightOverdue?: boolean;
-}) {
-  return (
-    <ul className="divide-y divide-neutral-800 rounded border border-neutral-800">
-      {tasks.map((task) => (
-        <li key={task.id} className="flex items-center justify-between px-4 py-3">
-          <div>
-            <Link
-              href={`/goals/${task.goal_id}`}
-              className="text-sm font-medium text-white hover:underline"
-            >
-              {task.title}
-            </Link>
-            {task.due_date && (
-              <p
-                className={`text-xs ${highlightOverdue ? 'text-red-400' : 'text-neutral-500'}`}
-              >
-                Due {task.due_date}
-              </p>
-            )}
-          </div>
-          <StatusBadge status={task.status} />
-        </li>
-      ))}
-    </ul>
   );
 }
